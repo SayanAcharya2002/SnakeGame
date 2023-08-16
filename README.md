@@ -17,6 +17,8 @@ The state encoding is very novel here. Rather than using the whole X,Y of the sn
 The snake's head is taken as the (0,0) of this coordinate system. Then the snake's distance from the front and right wall are calculated.
 The snake's direction of movement is irrelevant because the coordinate system is such that the snake always moves forward wrt to it.
 The fruit's location is calculated wrt the snake's head. These 4 inputs are used the snake's state.
+This sort of state system makes training faster as there are many canonical grid positions that occur throughout the game which this technique captures efficiently.
+
 
 There are too many states to use Bellman Value Iteration on this. Therefore TD learning is chosen.
 
