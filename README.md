@@ -39,3 +39,8 @@ There are too many states to use Bellman Value Iteration on this. Therefore TD l
 #### epsilon=0.1
 #### gamma=0.9
 #### decay_rate=inf
+
+https://github.com/SayanAcharya2002/SnakeGame/assets/46425134/080a2770-80af-4ec6-8dc5-7dce48bae4e1
+
+
+
