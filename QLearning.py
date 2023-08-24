@@ -12,6 +12,18 @@ class agent:
     self.gamma=gamma
     self.lr=lr
     self.trainable=True
+
+    print(self.q.shape)
+
+  def __str__(self):
+    return f"""
+q_shape: {self.q.shape}
+num_actions:{self.num_actions}
+eps:{self.epsilon}
+lr:{self.lr}
+gamma:{self.gamma}
+trainable:{self.trainable}
+        """
   
   def freeze(self):
     self.trainable=False

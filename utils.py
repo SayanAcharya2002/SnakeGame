@@ -47,6 +47,9 @@ class SnakePlayer(BaseObject):
     self.dir=random.choice(list(self.directions.keys()))
     self.body_set=set(part.topleft for part in self.body)
   
+  def __len__(self):
+    return len(self.body)
+
   def turn_left(self):
     index=SnakePlayer.ACTIONS.index(self.dir)
     index=(index-1+len(SnakePlayer.ACTIONS))%len(SnakePlayer.ACTIONS)
