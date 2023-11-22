@@ -2,9 +2,13 @@ import pygame,random,os,time
 import utils
 import QLearning
 import numpy as np
+import torch
 from typing import List
 from tqdm import tqdm
 from copy import deepcopy
+
+torch.set_default_device("cuda:0")
+
 
 pygame.mixer.init()
 pygame.font.init()
@@ -20,7 +24,7 @@ WIDTH,HEIGHT=800,800
 
 WIN=pygame.display.set_mode((WIDTH,HEIGHT))
 BACKGROUND=utils.get_image_surface(os.path.join(IMAGE_ASSET_PATH,"bluish.jpg"),(WIDTH,HEIGHT))
-PLAYER_SIZE=100
+PLAYER_SIZE=50
 
 # PLAYER=utils.SnakePlayer(WIN,(WIDTH//2,HEIGHT//2),head_color="black",body_color="green",vel=PLAYER_SIZE,block_size=PLAYER_SIZE)
 # apples:set[pygame.rect.Rect]=set()
@@ -51,30 +55,43 @@ def rotate_axes_clockwise(tup,dir):
   
   return (x,y)
 
-def get_state_encoding(player:utils.SnakePlayer,apples):
+def get_rel_state_encoding(player:utils.SnakePlayer,apples):
   """
     return a tuple of length 5 containing the following:
     [
       length,
+      max(delta_x,delta_y) distance from mid, 
       front_boundary_dist,
       right_boundary_dist,
-      rel_apple_x,
-      rel_apple_y,
+      direction of rel_apple_x, (-1,0,1)
+      direction of rel_apple_y, (-1,0,1)
     ]
   """
   head=np.array(player.body[-1].topleft)//PLAYER_SIZE
   # tail=np.array(player.body[0].topleft)//PLAYER_SIZE
-  # mid=np.array(player.body[len(player.body)//2].topleft)//PLAYER_SIZE
+  mid=np.array(player.body[len(player.body)//2].topleft)//PLAYER_SIZE
   apple_dist=(np.array(list(apples)[0])//PLAYER_SIZE)[:2]
   dir=DIR_MAPPING[player.dir]
   
   state=[]
   state.append((len(player)-1)) # always greater than 1
+  state.append(np.max(np.abs(head-mid)))
   state.append(np.min(np.abs(BOUNDARY_VALS[dir]-head)))
   state.append(np.min(np.abs(BOUNDARY_VALS[(dir+1)%NUM_DIR]-head)))
-  state.extend(i+WIDTH//PLAYER_SIZE for i in rotate_axes_clockwise(apple_dist-head,player.dir))
+  state.extend(np.sign(i) for i in rotate_axes_clockwise(apple_dist-head,player.dir))
   
   return tuple(state)
+
+def get_state_raw(player:utils.SnakePlayer,apples):
+  state=[[],[]]
+  for part in player.body:
+    state[0].append((part.topleft[0]//PLAYER_SIZE,part.topleft[1]//PLAYER_SIZE))
+  for apple in apples:
+    apple=apple[:2]
+    state[1].append((apple[0]//PLAYER_SIZE,apple[1]//PLAYER_SIZE))
+  state.append(player.dir)
+
+  return state
 
 def render_screen():
   if is_render:
@@ -112,30 +129,43 @@ def generate_random_snake():
                   random.randrange(0,HEIGHT-PLAYER_SIZE+1,PLAYER_SIZE))
 
 if __name__=="__main__":
-  num_episode=1_000_000
-  episode_factor=1000
-  max_step_per_episode=1000
+  num_episode=1_000_0
+  episode_factor=200
+  max_step_per_episode=1000_000
   agent_playing=True
-  max_snake_length=15
+  max_snake_length=100
 
   clock=pygame.time.Clock()
-  best_model_path=os.path.join(MODEL_DIR,f"QLearningAgentBest_RelativeDir_{WIDTH//PLAYER_SIZE}x{HEIGHT//PLAYER_SIZE}_{max_snake_length}.pkl")
-  latest_model_path=os.path.join(MODEL_DIR,f"QLearningAgentLatest_RelativeDir_{WIDTH//PLAYER_SIZE}x{HEIGHT//PLAYER_SIZE}_{max_snake_length}.pkl")
+  best_model_path=os.path.join(MODEL_DIR,f"FuncApproxQBest_SignumMid_{WIDTH//PLAYER_SIZE}x{HEIGHT//PLAYER_SIZE}_{max_snake_length}.pth")
+  latest_model_path=os.path.join(MODEL_DIR,f"FuncApproxQLatest_SignumMid_{WIDTH//PLAYER_SIZE}x{HEIGHT//PLAYER_SIZE}_{max_snake_length}.pth")
 
   # this param controls whether to train or test
-  is_render=True
+  is_render=False
   
-  min_lr=0.01
-  max_lr=0.1
+  min_lr=0.001
+  max_lr=0.3
   best_agg_reward=-np.inf
   eval_mode=False
-  agent=QLearning.agent(
-    num_states_limit=(max_snake_length+1,)+(WIDTH//PLAYER_SIZE,)*2+(2*WIDTH//PLAYER_SIZE+1,)*2,
-    num_actions=3, # turn_left,turn_right, and noop
-    epsilon=0.01,
-    gamma=0.9,
+  # agent=QLearning.agent(
+  #   # num_states_limit=(max_snake_length+1,)+(WIDTH//PLAYER_SIZE,)*2+(2*WIDTH//PLAYER_SIZE+1,)*2,
+  #   num_states_limit=(max_snake_length+1,WIDTH//PLAYER_SIZE,)+(WIDTH//PLAYER_SIZE,)*2+(3,)*2,
+  #   num_actions=3, # turn_left,turn_right, and noop
+  #   epsilon=0.05,
+  #   gamma=0.9,
+  #   lr=max_lr,
+  #   decay_rate=0,
+  # )
+  agent=QLearning.FuncApproxAgent(
+    flattened_pixel_limit=(WIDTH*HEIGHT)//PLAYER_SIZE**2,
+    num_dir=4,
+    num_actions=3,
+    epsilon=0.1,
+    gamma=0.99,
     lr=max_lr,
     decay_rate=0,
+    action_dir=ACTION_ORDERING,
+    height=HEIGHT//PLAYER_SIZE,
+    width=WIDTH//PLAYER_SIZE
   )
 
 
@@ -143,7 +173,7 @@ if __name__=="__main__":
   if is_render:
     print("testing model")
     max_step_per_episode=10_000
-    FPS=20
+    FPS=5
     eval_mode=False
     agent.load_model_dict(latest_model_path)
     agent.freeze()
@@ -158,106 +188,112 @@ if __name__=="__main__":
   
   agg_reward_list=[]
   pos_reward=[]
-  for episode in range(num_episode):
-    # print(episode,agent.epsilon)
-    if not is_render:
-      agent.lr=max_lr-(max_lr-min_lr)*episode/num_episode
-      agent.decay_exploration(episode/num_episode)
+  for factor in range(num_episode//episode_factor):
+    for cur_episode in (range(episode_factor)):
+      episode=cur_episode+factor*episode_factor
+      print(f"currently at: {episode}")
+      # print(episode,agent.epsilon)
+      if not is_render:
+        agent.lr=max_lr-(max_lr-min_lr)*episode/num_episode
+        agent.decay_exploration(episode/num_episode)
 
-    PLAYER=utils.SnakePlayer(WIN,generate_random_snake(),head_color="yellow",body_color="green",vel=PLAYER_SIZE,block_size=PLAYER_SIZE,grower=True)
-    apples:set[pygame.rect.Rect]=set([(*generate_random_apple(),PLAYER_SIZE,PLAYER_SIZE)])
-    run=True
-    win=True
-    rewards=[]
-    snake_lengths=[]
+      PLAYER=utils.SnakePlayer(WIN,generate_random_snake(),head_color="yellow",body_color="green",vel=PLAYER_SIZE,block_size=PLAYER_SIZE,grower=True)
+      PLAYER.create_random_snake(random.randint(0,5))
+      apples:set[pygame.rect.Rect]=set([(*generate_random_apple(),PLAYER_SIZE,PLAYER_SIZE)])
+      run=True
+      win=True
+      rewards=[]
+      snake_lengths=[]
 
-    cur_state=None
-    index=0
-    snake_length=1
-    while run:
-      index+=1
-      if(index==max_step_per_episode):
-        # print(f"played more than 1000 at episode:{episode}")
-        # agent.train_one_step(cur_state,action,None,-10)
-        # rewards.append(-10)
-        pygame.event.clear()
-        break
+      cur_state=None
+      index=0
+      snake_length=1
+      while run:
+        index+=1
+        if(index==max_step_per_episode):
+          # print(f"played more than 1000 at episode:{episode}")
+          # agent.train_one_step(cur_state,action,None,-10)
+          # rewards.append(-10)
+          pygame.event.clear()
+          break
+          
+        clock.tick(FPS)
+        for event in pygame.event.get():
+          if event.type==pygame.QUIT:
+            run=False
+            break
+          if event.type==COLLISION_EVENT:
+
+            agent.train_one_step(cur_state,action,None,-1)
+            rewards.append(-1)
+            run=False
+            win=False
+            break
+
+        if not run:
+          break
+
+        if cur_state is not None:
+          #update agent
+          agent.train_one_step(cur_state,action,get_state_raw(PLAYER,apples),reward)
+          rewards.append(reward)
         
-      clock.tick(FPS)
-      for event in pygame.event.get():
-        if event.type==pygame.QUIT:
-          run=False
-          break
-        if event.type==COLLISION_EVENT:
-          agent.train_one_step(cur_state,action,None,-1)
-          rewards.append(-1)
-          run=False
-          win=False
+        if len(PLAYER)>max_snake_length:
           break
 
-      if not run:
-        break
+        if agent_playing:
+          rel_state=get_rel_state_encoding(PLAYER,apples)
+          cur_state=get_state_raw(PLAYER,apples)
 
-      if cur_state is not None:
-        #update agent
-        agent.train_one_step(cur_state,action,get_state_encoding(PLAYER,apples),reward)
-        rewards.append(reward)
-      
-      if snake_length>max_snake_length:
-        break
-
-      if agent_playing:
-        cur_state=get_state_encoding(PLAYER,apples)
-        def at_border(state):
-          return state[1]==0 or state[2]==0
-        action=agent.do_action(cur_state,not is_render or (eval_mode and not at_border(cur_state)))
-        if action==2:
-          pass # do nothing
-        elif action==0:
-          PLAYER.turn_left()
+          def at_border(state):
+            return state[1]==0 or state[2]==0
+          action=agent.do_action(cur_state,not is_render or (eval_mode and not at_border(rel_state)))
+          if action==2:
+            pass # do nothing
+          elif action==0:
+            PLAYER.turn_left()
+          else:
+            PLAYER.turn_right()
+        
         else:
-          PLAYER.turn_right()
-      
-      else:
-        keys=pygame.key.get_pressed()
-        for key,cmd in KEY_MAPPINGS.items():
-          if keys[key]:
-            PLAYER.change_dir(cmd)
+          keys=pygame.key.get_pressed()
+          for key,cmd in KEY_MAPPINGS.items():
+            if keys[key]:
+              PLAYER.change_dir(cmd)
 
-      render_screen()
+        render_screen()
 
-      reward=0 # penalty for inf looping
-      if len(apples)==0:
-        reward=snake_length
-        snake_length+=1
-        apple_loc=None
-        while not apple_loc or apple_loc in PLAYER.body_set:
-          apple_loc=generate_random_apple()
-        apples.add((*apple_loc,PLAYER_SIZE,PLAYER_SIZE))
-        # print(apple_loc)
+        reward=-0.3 # penalty for inf looping
+        if len(apples)==0:
+          reward+=1
+          apple_loc=None
+          while not apple_loc or apple_loc in PLAYER.body_set:
+            apple_loc=generate_random_apple()
+          apples.add((*apple_loc,PLAYER_SIZE,PLAYER_SIZE))
+          # print(apple_loc)
 
-      
-    cur_agg_reward=np.sum(rewards)
-    cur_pos_reward=np.sum(i for i in rewards if i>0)
-    pos_reward.append(cur_pos_reward)
-    agg_reward_list.append(cur_agg_reward)
-    snake_lengths.append(snake_length)
-    if not is_render:
-      if episode%episode_factor==0:
-        print(f"episode: {episode}")
-        print(agent)
-        print(f"agg_reward last {episode_factor}:{np.average(agg_reward_list[-1:-(episode_factor+1):-1])}")
-        print(f"avg snake length: {np.average(snake_lengths[-1:-(episode_factor+1):-1])}")
-        # print(f"pos: {pos} neg:{neg}")
-        # print(f"agg. pos reward: {np.mean(pos_reward[-1:-(episode_factor+1):-1])}")
-        print(f"saving latest model at episode:{episode}...............")
-        agent.save_model_dict(latest_model_path)
+        
+      cur_agg_reward=np.sum(rewards)
+      cur_pos_reward=np.sum(i for i in rewards if i>0)
+      pos_reward.append(cur_pos_reward)
+      agg_reward_list.append(cur_agg_reward)
+      snake_lengths.append(len(PLAYER))
+      if not is_render:
+        if episode%episode_factor==0:
+          print(f"episode: {episode}")
+          print(agent)
+          print(f"agg_reward last {episode_factor}:{np.average(agg_reward_list[-1:-(episode_factor+1):-1])}")
+          print(f"avg snake length: {np.average(snake_lengths[-1:-(episode_factor+1):-1])}")
+          # print(f"pos: {pos} neg:{neg}")
+          # print(f"agg. pos reward: {np.mean(pos_reward[-1:-(episode_factor+1):-1])}")
+          print(f"saving latest model at episode:{episode}...............")
+          agent.save_model_dict(latest_model_path)
 
-      if cur_agg_reward>best_agg_reward:
-        best_agg_reward=cur_agg_reward
-        print(f"reward:{best_agg_reward} saving best model at episode:{episode}...............")
-        # best_agent=deepcopy(agent)
-        agent.save_model_dict(best_model_path)
+        if cur_agg_reward>best_agg_reward:
+          best_agg_reward=cur_agg_reward
+          print(f"reward:{best_agg_reward} saving best model at episode:{episode}...............")
+          # best_agent=deepcopy(agent)
+          agent.save_model_dict(best_model_path)
     
   print(f"best_case: {best_agg_reward}")
   if is_render:

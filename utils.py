@@ -35,6 +35,7 @@ class SnakePlayer(BaseObject):
     self.block_size=block_size
     self.is_alive=True
     self.grower=grower
+
     #head is the last element
     self.body:List[pygame.rect.Rect]=[pygame.rect.Rect(*init_pos,*(self.block_size,)*2)]
     #clockwise order (right arrow press)
@@ -46,7 +47,24 @@ class SnakePlayer(BaseObject):
     }
     self.dir=random.choice(list(self.directions.keys()))
     self.body_set=set(part.topleft for part in self.body)
+
+    self.autogrow=False # this flag controls whether the snake auto grows without apple
   
+  def create_random_snake(self,_size):
+    self.autogrow=True
+    
+    for _ in range(_size):
+      rand_val=np.random.random()
+      if rand_val<1/3:
+        self.turn_left()
+      elif rand_val<2/3:
+        self.turn_right()
+      
+      self.update_location({})
+  
+    self.autogrow=False
+    
+
   def __len__(self):
     return len(self.body)
 
@@ -102,8 +120,11 @@ class SnakePlayer(BaseObject):
     head=self.calculate_next_head()
     self.body.append(pygame.rect.Rect(*head,*(self.block_size,)*2))
     self.body_set.add(head)
-    if self.is_colliding():
+    if self.is_colliding(): # undo the changes
       self.is_alive=False
+      self.body.pop()
+      self.body_set.remove(head)
+
       return self.is_alive
     
     ate_apple=False
@@ -112,12 +133,14 @@ class SnakePlayer(BaseObject):
         ate_apple=True
         apples.remove(apple)
         break
-
-    if not self.grower or not ate_apple:
+    
+    if not self.autogrow and (not self.grower or not ate_apple):
       #shift the body
       self.body_set.remove(self.body[0].topleft)
       self.body[:-1]=self.body[1::]
       self.body.pop()
+  
+    
 
     return self.is_alive
 
